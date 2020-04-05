@@ -37,6 +37,9 @@ Loading the example texts - six novels published by 19th century author Jane Aus
 ```{r austen-text}
 
 library(janeaustenr)
+library(dplyr)
+library(tidyr)
+library(stringr)
 
 austen_books()
 
@@ -192,45 +195,193 @@ tidy_books %>%
 ```
 
 
-# Extension - Drug Review Sentiment Analysis
+# Extension - Victor Hugo Sentiment Analysis
 
-For the sentiment analysis, I'm using a list of prescription and OTC drug reviews I was able to download on kaggle.com. It's available for download here <https://www.kaggle.com/jessicali9530/kuc-hackathon-winter-2018>.
+For the sentiment analysis, I used Project Gutenberg, which is a library of ebooks that are in the public domain. I'm going to look at two books from an author of the same time, Victor Hugo. They are available in several formats here: <http://www.gutenberg.org/ebooks/135>, <http://www.gutenberg.org/ebooks/2610>. 
 
+For purposes of using the same general methods as the example, I will start out by importing the .txt files and preparing in the same format as austen_books 
 
 ```{r unest-tokens}
+les_mis <- read.delim("https://raw.githubusercontent.com/hillt5/DATA607-Assignment-4-5-20/master/Hugo-Les-Mis.txt", stringsAsFactors = FALSE)
+les_mis_title <- rep("Les Miserables", 30128)
+les_mis["book"] <- cbind(les_mis_title)
+names(les_mis)[names(les_mis) == "The.Project.Gutenberg.EBook.of.Les.MisÃ.rables..by.Victor.Hugo"] <- "text"
 
+hunchback <- read.delim("https://raw.githubusercontent.com/hillt5/DATA607-Assignment-4-5-20/master/Hugo-Hunchback.txt", stringsAsFactors = FALSE)
+hunchback_title <- rep("The Hunchback of Notre Dame", 18975)
+hunchback["book"] <- cbind(hunchback_title)
+names(hunchback)[names(hunchback) == "ï.."] <- "text"
+hugo_books <- rbind(les_mis, hunchback)
 
-drug_reviews_orig <- read.csv("https://raw.githubusercontent.com/hillt5/DATA607_Sentiment_Analysis/master/drugsComTrain_raw.csv", stringsAsFactors = FALSE, row.names = 1)
-```
-
-```{r tidy-drugs}
-library(dplyr)
-library(stringr)
-library(tidyr)
-
-tidy_drugs <- drug_reviews_orig %>%
-  select(drugName, review) %>%
-  unnest_tokens(word, review) %>%
-  group_by(drugName) %>%
-  arrange(drugName) %>%
-  ungroup()
-  
-head(tidy_drugs)
 
 ```
 
 
-```{sentiment-joy}
+```{r tidy-hugo-books}
+tidy_hugo <- hugo_books %>%
+  mutate(linenumber = row_number(),
+         chapter = cumsum(str_detect(text, regex("^chapter [\\divxlc]", 
+                                                 ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+tidy_hugo$book <-as.factor(tidy_hugo$book)
+```
+
+
+
+```{r hugo-sentiment-joy}
 
 nrc_joy <- get_sentiments("nrc") %>% 
   filter(sentiment == "joy")
 
-tidy_books %>%
-  filter(book == "Emma") %>%
+tidy_hugo %>%
+  filter(book == "Les Miserables") %>%
   inner_join(nrc_joy) %>%
   count(word, sort = TRUE)
+  
+```
+
+```{r hugo-sentiments}
+
+library(tidyr)
+
+hugo_sentiment <- tidy_hugo %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+
+```{r hugo-plot}
+library(ggplot2)
+
+ggplot(hugo_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+
+```
+
+There appears to be a very negative portion of Les Miserables in the last act. Lets look at this further in the next step:
+
+
+
+```{r hugo-bing-word-ct}
+
+hugo_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+hugo_word_counts
+
+```
+
+```{r hugo-bing-word-ct-plot}
+
+hugo_word_counts %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  coord_flip()
+
+```
+
+Again, it appears that miss is a commonly used word that may be throwing off the sentiment. We can reuse the same custom word stops from earlier and generate a word cloud.
+
+
+```{r hugo-bing-word-cloud}
+
+library(wordcloud)
+
+tidy_hugo %>%
+  anti_join(custom_stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+
+```
+This word cloud also indicates that there's a unique French character that is very prevalent. I'll add this to our custom list.
+
+
+```{r custom-word-stop-update}
+custom_stop_words <- bind_rows(tibble(word = c("â"), 
+                                          lexicon = c("custom")), 
+                               custom_stop_words)
 
 ```
 
 
+```{r  hugo-sentiment-update}
+tidy_hugo %>%
+  anti_join(custom_stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 150))
 
+hugo_sentiment_update <- tidy_hugo %>%
+  inner_join(get_sentiments("bing")) %>%
+  anti_join(custom_stop_words) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+ggplot(hugo_sentiment_update, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+
+```
+
+It appears that Les Miserables has become even more negative after filtering out stop words. As a final step, lets compare sentiments for Les Miserables for the three sentiment lexicons provided, plus the lexicon SentiWordNet from the lexicon library.
+
+
+```{r afinn-les-mis}
+
+library(lexicon)
+
+tidy_les_mis <- tidy_hugo %>% 
+  filter(book == "Les Miserables")
+
+
+afinn_hugo <- tidy_les_mis %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc_hugo <- bind_rows(tidy_les_mis %>% 
+                            inner_join(get_sentiments("bing")) %>%
+                            mutate(method = "Bing et al."),
+                          tidy_les_mis %>% 
+                            inner_join(get_sentiments("nrc") %>% 
+                                         filter(sentiment %in% c("positive", 
+                                                                 "negative"))) %>%
+                            mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+sentiword <- hash_sentiment_sentiword
+
+names(sentiword)[names(sentiword) == "x"] <- "word"
+names(sentiword)[names(sentiword) == "y"] <- "score"
+
+sentiword_hugo <- tidy_les_mis %>%
+  inner_join(sentiword, by = 'word') %>%
+  group_by(index = linenumber %/% 80) %>%
+  summarise(sentiment = sum(score)) %>%
+  mutate(method = "SentiWordNet")
+```
+
+```{r afinn-vs-bing-vs-nrc-plot-hugo}
+
+bind_rows(afinn_hugo, 
+          bing_and_nrc_hugo, sentiword_hugo) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+
+```
