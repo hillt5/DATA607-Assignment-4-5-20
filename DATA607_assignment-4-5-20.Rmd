@@ -1,0 +1,236 @@
+---
+title: "DATA 607 - Sentiment analysis  "
+author: "Thomas Hill"
+date: "4/4/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Instructions
+
+In Text Mining with R, Chapter 2 looks at Sentiment Analysis.  In this assignment, you should start by getting the primary example code from chapter 2 working in an R Markdown document.  You should provide a citation to this base code.  You’re then asked to extend the code in two ways:
+
+Work with a different corpus of your choosing, and oncorporate at least one additional sentiment lexicon (possibly from another R package that you’ve found through research).
+As usual, please submit links to both an .Rmd file posted in your GitHub repository and to your code on rpubs.com.  You make work on a small team on this assignment.
+
+
+# Primary Example Code - Jane Austen Corpus
+
+Loading the three sentiment lexicons used in the example
+
+```{r get-libs}
+library(textdata)
+library(tidytext)
+
+get_sentiments("afinn")
+get_sentiments("bing")
+get_sentiments("nrc")
+```
+
+Loading the example texts - six novels published by 19th century author Jane Austen. Then, the books are converted to a tidy format - grouped originally by book, then a line of mutate code to keep track of the original line number in a new column, then unnesting each word from the text.
+
+
+```{r austen-text}
+
+library(janeaustenr)
+
+austen_books()
+
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(linenumber = row_number(),
+         chapter = cumsum(str_detect(text, regex("^chapter [\\divxlc]", 
+                                                 ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+
+```
+
+
+Here is the corresponding list of positive sentiment words in Austen's novel _Emma_.  
+```{r austen-joy}
+
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+
+tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+
+```
+
+
+Using the bing lexicon, the six books are plotted according to the sentiments of each line.  The affected words are identified using an inner join, then the net sentimenet is calculated by substracting the magnitude of negative sentiment from positive sentiment.  Last, the net sentiment per line of the six novels is graphed using ggplot and the facet_wrap function. 
+
+```{r austen-sentiments}
+
+library(tidyr)
+
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+
+```{r austen-plot}
+library(ggplot2)
+
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+
+```
+
+Generally, it appears that Austen novels have more positive than negative sentiment. Some especially negative patterns are evident halfway through _Pride and Prejudice_ as well as at the end of _Mansfield Park_.  
+
+Next, using the afinn lexicon, the example looked at the sentiment of _Pride and Prejudice_.  Again, using a similar technique, the lexicon is inner joined to the particular book. 
+
+```{r afinn-pride}
+
+pride_prejudice <- tidy_books %>% 
+  filter(book == "Pride & Prejudice")
+
+pride_prejudice
+
+
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(pride_prejudice %>% 
+                            inner_join(get_sentiments("bing")) %>%
+                            mutate(method = "Bing et al."),
+                          pride_prejudice %>% 
+                            inner_join(get_sentiments("nrc") %>% 
+                                         filter(sentiment %in% c("positive", 
+                                                                 "negative"))) %>%
+                            mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+```
+
+The sentiments can then be plotted for comparison of each lexicon.
+
+```{r afinn-vs-bing-vsnrc-plot}
+
+bind_rows(afinn, 
+          bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+
+```
+
+It appears that NRC estimates greater positive sentiment for this particular book, while only Bing predicts a net negative area halfway through the book.
+
+Finally, using the Bing lexicon, the example obtains a wordcount of Austen's works. The resulting data frame indicates the positive or negative senetiment in addition to the frequency.
+
+```{r bing-word-ct}
+
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+bing_word_counts
+
+```
+
+The results can then be compared graphically. One outlier is the use of the word 'miss', which is part of the negative sentiment lexicon because it would indicate the opposite of a 'hit' or unfulfilled expectations. In Austen's novels, it's more commonly used as a title of an unmarried woman - Miss Bingley for example. While being an unmarried woman generally seen as a negative in Jane Austen's novels, for the purposes of this example it's an anomalous result.
+
+```{r bing-word-ct-plot}
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  coord_flip()
+
+```
+
+This bit of code allows us to edit the stop words and add 'miss' to the list of words not counted when generating a word count.
+
+```{r bing-miss-anomaly}
+
+custom_stop_words <- bind_rows(tibble(word = c("miss"), 
+                                          lexicon = c("custom")), 
+                               stop_words)
+
+custom_stop_words
+
+
+```
+
+Below is a word cloud with the word 'miss' omitted.
+
+
+```{r bing-word-cloud}
+
+library(wordcloud)
+
+tidy_books %>%
+  anti_join(custom_stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+
+```
+
+
+# Extension - Drug Review Sentiment Analysis
+
+For the sentiment analysis, I'm using a list of prescription and OTC drug reviews I was able to download on kaggle.com. It's available for download here <https://www.kaggle.com/jessicali9530/kuc-hackathon-winter-2018>.
+
+
+```{r unest-tokens}
+
+
+drug_reviews_orig <- read.csv("https://raw.githubusercontent.com/hillt5/DATA607_Sentiment_Analysis/master/drugsComTrain_raw.csv", stringsAsFactors = FALSE, row.names = 1)
+```
+
+```{r tidy-drugs}
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+tidy_drugs <- drug_reviews_orig %>%
+  select(drugName, review) %>%
+  unnest_tokens(word, review) %>%
+  group_by(drugName) %>%
+  arrange(drugName) %>%
+  ungroup()
+  
+head(tidy_drugs)
+
+```
+
+
+```{sentiment-joy}
+
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+
+tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+
+```
+
+
+
